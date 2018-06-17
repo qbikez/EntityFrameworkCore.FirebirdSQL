@@ -37,12 +37,11 @@ namespace EntityFrameworkCore.FirebirdSql.Scaffolding.Internal
         private static Version _version;
         private readonly IDiagnosticsLogger<DbLoggerCategory.Scaffolding> _logger;
 
-        public FbDatabaseModelFactory(IDiagnosticsLogger<DbLoggerCategory.Scaffolding> logger)
-            => _logger = logger;
+        public FbDatabaseModelFactory(IDiagnosticsLogger<DbLoggerCategory.Scaffolding> logger)=> _logger = logger;
 
         public DatabaseModel Create(string connectionString, IEnumerable<string> tables, IEnumerable<string> schemas)
         {
-            using (var connection = new FbConnection(connectionString))
+            using(var connection = new FbConnection(connectionString))
             {
                 return Create(connection, tables, schemas);
             }
@@ -75,18 +74,15 @@ namespace EntityFrameworkCore.FirebirdSql.Scaffolding.Internal
             var tablesToSelect = new HashSet<string>(tables.ToList(), StringComparer.OrdinalIgnoreCase);
             var selectedTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            using (var command = connection.CreateCommand())
+            using(var command = connection.CreateCommand())
             {
-                command.CommandText = new StringBuilder()
-                    .Append("SELECT RDB$RELATION_NAME FROM ")
-                    .Append("RDB$RELATIONS t ")
-                    .Append("WHERE t.RDB$RELATION_NAME <> ")
-                    .Append($"'{HistoryRepository.DefaultTableName}' ")
-                    .Append("AND RDB$VIEW_BLR IS NULL AND (RDB$SYSTEM_FLAG IS NULL OR RDB$SYSTEM_FLAG = 0)")
-                    .Append(";")
-                    .ToString();
+                command.CommandText = $@"
+                    SELECT RDB$RELATION_NAME FROM
+                    RDB$RELATIONS t
+                    WHERE t.RDB$RELATION_NAME <> '{HistoryRepository.DefaultTableName}'
+                    AND RDB$VIEW_BLR IS NULL AND (RDB$SYSTEM_FLAG IS NULL OR RDB$SYSTEM_FLAG = 0);";
 
-                using (var reader = command.ExecuteReader())
+                using(var reader = command.ExecuteReader())
                 {
                     while (reader.Read())
                     {
@@ -110,13 +106,20 @@ namespace EntityFrameworkCore.FirebirdSql.Scaffolding.Internal
                         if (primaryKey != null)
                         {
                             primaryKey.Table = table;
-                            table.PrimaryKey = primaryKey;
+                            if (!primaryKey.Columns.Any()) {
+                                System.Console.WriteLine($"PK '{primaryKey.Name}' on table '{table.Name}' has no columns!");
+                            } else {
+                                table.PrimaryKey = primaryKey;
+                            }
                         }
 
                         foreach (var index in GetIndexes(connection, name, table.Columns))
                         {
                             index.Table = table;
-                            table.Indexes.Add(index);
+                            if (!index.Columns.Any()) {
+                                System.Console.WriteLine($"index '{index.Name}' on table '{table.Name}' has no columns!");
+                            }
+                            table.Indexes.Add(index);  
                         }
 
                         yield return table;
@@ -200,11 +203,11 @@ LEFT OUTER JOIN RDB$COLLATIONS DCO ON ((DCO.RDB$COLLATION_ID = F.RDB$COLLATION_I
 WHERE (COALESCE(RF.RDB$SYSTEM_FLAG, 0) = 0) AND RF.RDB$RELATION_NAME='{table}'
 ORDER BY RF.RDB$FIELD_POSITION";
 
-            using (var command = connection.CreateCommand())
+            using(var command = connection.CreateCommand())
             {
                 command.CommandText = _columnsOfTable;
 
-                using (var reader = command.ExecuteReader())
+                using(var reader = command.ExecuteReader())
                 {
                     while (reader.Read())
                     {
@@ -212,7 +215,7 @@ ORDER BY RF.RDB$FIELD_POSITION";
                         var dataType = reader["FIELD_TYPE"].ToString().Trim();
                         var notNull = reader["FIELD_NULL"].ToString().Trim().Equals("NULL", StringComparison.OrdinalIgnoreCase);
                         var defaultValue = reader["FIELD_DEFAULT"].ToString().Trim();
-                        var isIdentity = int.Parse(reader["IDENTITY"].ToString()) == 1;
+                        var isIdentity = int.Parse(reader["IDENTITY"].ToString())== 1;
                         var description = reader["FIELD_DESCRIPTION"].ToString().Trim();
 
                         _logger.ColumnFound(table, columnName, dataType, notNull, defaultValue);
@@ -223,12 +226,12 @@ ORDER BY RF.RDB$FIELD_POSITION";
                             Name = columnName,
                             StoreType = dataType,
                             IsNullable = !notNull,
-                            DefaultValueSql = string.IsNullOrWhiteSpace(defaultValue)
-                                        ? null
-                                        : defaultValue,
-                            ValueGenerated = isIdentity
-                                        ? Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd
-                                        : default
+                            DefaultValueSql = string.IsNullOrWhiteSpace(defaultValue)?
+                            null :
+                            defaultValue,
+                            ValueGenerated = isIdentity ?
+                            Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd :
+                            default
                         };
 
                         if (!string.IsNullOrWhiteSpace(description))
@@ -256,10 +259,10 @@ WHERE RC.RDB$CONSTRAINT_TYPE = 'PRIMARY KEY' AND I.RDB$RELATION_NAME = '{table}'
 
             var primaryKey = new DatabasePrimaryKey();
 
-            using (var command = connection.CreateCommand())
+            using(var command = connection.CreateCommand())
             {
                 command.CommandText = primaryKeys;
-                using (var reader = command.ExecuteReader())
+                using(var reader = command.ExecuteReader())
                 {
                     while (reader.Read())
                     {
@@ -272,8 +275,8 @@ WHERE RC.RDB$CONSTRAINT_TYPE = 'PRIMARY KEY' AND I.RDB$RELATION_NAME = '{table}'
                             _logger.PrimaryKeyFound(name, table);
                         }
 
-                        var column = columns.FirstOrDefault(c => c.Name == columnName)
-                                     ?? columns.FirstOrDefault(c => c.Name.Equals(columnName, StringComparison.OrdinalIgnoreCase));
+                        var column = columns.FirstOrDefault(c => c.Name == columnName)??
+                            columns.FirstOrDefault(c => c.Name.Equals(columnName, StringComparison.OrdinalIgnoreCase));
 
                         Debug.Assert(column != null, "column is null.");
 
@@ -292,23 +295,28 @@ WHERE RC.RDB$CONSTRAINT_TYPE = 'PRIMARY KEY' AND I.RDB$RELATION_NAME = '{table}'
             var indexes = $@"
 SELECT
     I.RDB$INDEX_NAME, COALESCE(I.RDB$UNIQUE_FLAG, 0) AS ISUNIQUE,
-    I.RDB$RELATION_NAME, SG.RDB$FIELD_NAME FROM  RDB$INDICES I
+    I.RDB$RELATION_NAME, List(SG.RDB$FIELD_NAME) as ""RDB$FIELD_NAME"" FROM  RDB$INDICES I
     LEFT JOIN RDB$INDEX_SEGMENTS SG ON I.RDB$INDEX_NAME = SG.RDB$INDEX_NAME
     LEFT JOIN RDB$RELATION_CONSTRAINTS RC ON RC.RDB$INDEX_NAME = I.RDB$INDEX_NAME AND RC.RDB$CONSTRAINT_TYPE = NULL
 WHERE I.RDB$RELATION_NAME = '{table}'
-GROUP BY I.RDB$INDEX_NAME, ISUNIQUE, I.RDB$RELATION_NAME, SG.RDB$FIELD_NAME";
+GROUP BY I.RDB$INDEX_NAME, ISUNIQUE, I.RDB$RELATION_NAME";
 
-            using (var command = connection.CreateCommand())
+            using(var command = connection.CreateCommand())
             {
                 command.CommandText = indexes;
 
-                using (var reader = command.ExecuteReader())
+                using(var reader = command.ExecuteReader())
                 {
                     while (reader.Read())
                     {
                         var indexName = reader["RDB$INDEX_NAME"].ToString().Trim();
                         var columnName = reader["RDB$FIELD_NAME"].ToString().Trim();
                         var isUnique = reader["ISUNIQUE"].ToString().Equals("1");
+
+                        if (string.IsNullOrWhiteSpace(columnName)) {
+                            // ignore invalid indices (without a column specified)
+                            continue;
+                        }
 
                         var index = new DatabaseIndex
                         {
@@ -318,11 +326,12 @@ GROUP BY I.RDB$INDEX_NAME, ISUNIQUE, I.RDB$RELATION_NAME, SG.RDB$FIELD_NAME";
 
                         _logger.IndexFound(index.Name, table, index.IsUnique);
 
-                        foreach (var name in columnName.Trim().Split(','))
+                        foreach (var n in columnName.Trim().Split(','))
                         {
-                            var column = columns.FirstOrDefault(c => c.Name == name)
-                                         ?? columns.FirstOrDefault(c => c.Name.Equals(name, StringComparison.Ordinal));
-                            Debug.Assert(column != null, "column is null.");
+                            var name = n.Trim();
+                            var column = columns.FirstOrDefault(c => c.Name == name)??
+                                columns.FirstOrDefault(c => c.Name.Equals(name, StringComparison.Ordinal));
+                            Debug.Assert(column != null, $"column '{name}' parsed for index '{indexName}' from '{columnName}' in table {table} is null.");
 
                             index.Columns.Add(column);
                         }
@@ -364,63 +373,70 @@ FROM
 WHERE
     rc.rdb$constraint_type = 'PRIMARY KEY' AND FORAIGN.REFERENCE_TABLE_NAME = rc.rdb$relation_name";
 
-            using (var command = connection.CreateCommand())
+            using(var command = connection.CreateCommand())
             {
                 command.CommandText = foreignKeys;
 
-                using (var reader = command.ExecuteReader())
+                using(var reader = command.ExecuteReader())
                 {
                     while (reader.Read())
                     {
-                        var constaintName = reader["RDB$CONSTRAINT_NAME"].ToString().Trim();
-                        var principalTableName = reader["RDB$RELATION_NAME"].ToString().Trim();
-                        var onDelete = reader["RDB$DELETE_RULE"].ToString().Trim();
-
-                        var foreignKey = new DatabaseForeignKey
-                        {
-                            Name = constaintName,
-                            PrincipalTable = tables.FirstOrDefault(t => t.Name == principalTableName)
-                                             ?? tables.FirstOrDefault(t => t.Name.Equals(principalTableName, StringComparison.OrdinalIgnoreCase)),
-                            OnDelete = ConvertToReferentialAction(onDelete),
-                            Table = table
-                        };
-
-                        _logger.ForeignKeyFound(table.Name, constaintName, principalTableName, onDelete);
-
-                        if (foreignKey.PrincipalTable == null)
-                        {
-                            _logger.ForeignKeyReferencesMissingTableWarning(constaintName);
-                            continue;
-                        }
-
+                        DatabaseForeignKey foreignKey = null;
                         var invalid = false;
-                        foreach (var pair in reader.GetString(3).Split(','))
+
+                        try
                         {
+                            var constaintName = reader["RDB$CONSTRAINT_NAME"].ToString().Trim();
+                            var principalTableName = reader["RDB$RELATION_NAME"].ToString().Trim();
+                            var onDelete = reader["RDB$DELETE_RULE"].ToString().Trim();
 
-                            var columnName = pair.Split('$')[0];
-                            var column = table.Columns.FirstOrDefault(c => c.Name == columnName)
-                                         ?? table.Columns.FirstOrDefault(c => c.Name.Equals(columnName, StringComparison.OrdinalIgnoreCase));
-                            Debug.Assert(column != null, "column is null.");
-
-                            var principalColumnName = pair.Split('$')[1];
-                            var principalColumn = foreignKey.PrincipalTable.Columns.FirstOrDefault(c => c.Name == principalColumnName);
-
-
-                            if (principalColumn == null)
+                            foreignKey = new DatabaseForeignKey
                             {
-                                invalid = true;
-                                _logger.ForeignKeyPrincipalColumnMissingWarning(
-                                    constaintName,
-                                    table.Name,
-                                    principalColumnName,
-                                    principalTableName);
-                                break;
+                                Name = constaintName,
+                                PrincipalTable = tables.FirstOrDefault(t => t.Name == principalTableName)??
+                                tables.FirstOrDefault(t => t.Name.Equals(principalTableName, StringComparison.OrdinalIgnoreCase)),
+                                OnDelete = ConvertToReferentialAction(onDelete),
+                                Table = table
+                            };
+
+                            _logger.ForeignKeyFound(table.Name, constaintName, principalTableName, onDelete);
+
+                            if (foreignKey.PrincipalTable == null)
+                            {
+                                _logger.ForeignKeyReferencesMissingTableWarning(constaintName);
+                                continue;
                             }
 
-                            foreignKey.Columns.Add(column);
-                            foreignKey.PrincipalColumns.Add(principalColumn);
-                        }
+                            foreach (var pair in reader.GetString(3).Split(','))
+                            {
 
+                                var columnName = pair.Split('$')[0];
+                                var column = table.Columns.FirstOrDefault(c => c.Name == columnName)??
+                                    table.Columns.FirstOrDefault(c => c.Name.Equals(columnName, StringComparison.OrdinalIgnoreCase));
+                                Debug.Assert(column != null, "column is null.");
+
+                                var principalColumnName = pair.Split('$')[1];
+                                var principalColumn = foreignKey.PrincipalTable.Columns.FirstOrDefault(c => c.Name == principalColumnName);
+
+                                if (principalColumn == null)
+                                {
+                                    invalid = true;
+                                    _logger.ForeignKeyPrincipalColumnMissingWarning(
+                                        constaintName,
+                                        table.Name,
+                                        principalColumnName,
+                                        principalTableName);
+                                    break;
+                                }
+
+                                foreignKey.Columns.Add(column);
+                                foreignKey.PrincipalColumns.Add(principalColumn);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new Exception($"failed to get foreign keys for table {table.Name}", ex);
+                        }
                         if (!invalid)
                         {
                             yield return foreignKey;
@@ -428,11 +444,12 @@ WHERE
                     }
                 }
             }
+
         }
 
-        private static string FieldIsIdentity => (_version.Major >= 3 ? "COALESCE(RF.RDB$IDENTITY_TYPE, 0)" : "0");
+        private static string FieldIsIdentity =>(_version.Major >= 3 ? "COALESCE(RF.RDB$IDENTITY_TYPE, 0)" : "0");
 
-        private static string EscapeLiteral(string s) => $"N'{s}'";
+        private static string EscapeLiteral(string s)=> $"N'{s}'";
 
         private static ReferentialAction? ConvertToReferentialAction(string onDeleteAction)
         {
