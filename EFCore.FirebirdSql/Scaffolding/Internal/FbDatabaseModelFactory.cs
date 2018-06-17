@@ -66,6 +66,13 @@ namespace EntityFrameworkCore.FirebirdSql.Scaffolding.Internal
                 databaseModel.Tables.Add(table);
             }
 
+            foreach(var table in databaseModel.Tables) {
+                foreach(var fk in GetForeignKeys(connection, table, databaseModel.Tables)) {
+                    fk.Table = table;
+                    table.ForeignKeys.Add(fk);
+                }
+            }
+
             return databaseModel;
         }
 
@@ -86,7 +93,7 @@ namespace EntityFrameworkCore.FirebirdSql.Scaffolding.Internal
                 {
                     while (reader.Read())
                     {
-                        var name = reader.GetString(0);
+                        var name = reader.GetString(0).Trim();
                         if (!AllowsTable(tablesToSelect, selectedTables, name))
                         {
                             continue;
@@ -346,21 +353,25 @@ GROUP BY I.RDB$INDEX_NAME, ISUNIQUE, I.RDB$RELATION_NAME";
         {
             var foreignKeys = $@"
 SELECT
-    FORAIGN.CONSTRAINT_NAME AS RDB$CONSTRAINT_NAME,
-    FORAIGN.RELATION_NAME AS RDB$RELATION_NAME,
-    FORAIGN.DELETE_RULE AS RDB$DELETE_RULE,
-    trim(trim(FORAIGN.column_name)||'$'||sg.rdb$field_name) AS COLUMN_NAME
+	REFERENCE_TABLE_NAME,
+    FOREIGN_.CONSTRAINT_NAME AS RDB$CONSTRAINT_NAME,
+    FOREIGN_.MASTER_RELATION_NAME as RDB$RELATION_NAME,
+    FOREIGN_.DELETE_RULE AS RDB$DELETE_RULE,
+    trim(trim(FOREIGN_.column_name)||'$'||FOREIGN_.MASTER_COLUMN_NAME) AS COLUMN_NAME,
+    rc.rdb$constraint_type,
+    ix.rdb$index_name
 FROM
     rdb$indices ix
     left join rdb$index_segments sg on ix.rdb$index_name = sg.rdb$index_name
     left join rdb$relation_constraints rc on rc.rdb$index_name = ix.rdb$index_name,
         (
         SELECT
-            detail_index_segments.RDB$FIELD_NAME AS column_name,
-            detail_relation_constraints.RDB$CONSTRAINT_NAME AS CONSTRAINT_NAME,
-            master_relation_constraints.RDB$RELATION_NAME AS RELATION_NAME,
-            rdb$ref_constraints.RDB$DELETE_RULE AS DELETE_RULE,
-            detail_relation_constraints.RDB$RELATION_NAME AS REFERENCE_TABLE_NAME
+           detail_relation_constraints.RDB$CONSTRAINT_NAME AS CONSTRAINT_NAME,
+           detail_relation_constraints.RDB$RELATION_NAME AS REFERENCE_TABLE_NAME,
+           detail_index_segments.RDB$FIELD_NAME AS column_name,
+           master_relation_constraints.RDB$RELATION_NAME AS MASTER_RELATION_NAME,
+           master_index_segments.RDB$FIELD_NAME AS MASTER_COLUMN_NAME,
+           rdb$ref_constraints.RDB$DELETE_RULE AS DELETE_RULE
         FROM
             rdb$relation_constraints detail_relation_constraints
             JOIN rdb$index_segments detail_index_segments ON detail_relation_constraints.rdb$index_name = detail_index_segments.rdb$index_name
@@ -368,10 +379,13 @@ FROM
             JOIN rdb$relation_constraints master_relation_constraints ON rdb$ref_constraints.rdb$const_name_uq = master_relation_constraints.rdb$constraint_name
             JOIN rdb$index_segments master_index_segments ON master_relation_constraints.rdb$index_name = master_index_segments.rdb$index_name
         WHERE
-            detail_relation_constraints.rdb$constraint_type = 'FOREIGN KEY' AND detail_relation_constraints.RDB$RELATION_NAME = '{table.Name}'
-    ) FORAIGN
+            detail_relation_constraints.rdb$constraint_type = 'FOREIGN KEY' 
+            AND (detail_relation_constraints.RDB$RELATION_NAME = '{table.Name}')
+    ) FOREIGN_
 WHERE
-    rc.rdb$constraint_type = 'PRIMARY KEY' AND FORAIGN.REFERENCE_TABLE_NAME = rc.rdb$relation_name";
+    rc.rdb$constraint_type = 'FOREIGN KEY' AND 
+    FOREIGN_.REFERENCE_TABLE_NAME = rc.rdb$relation_name
+";
 
             using(var command = connection.CreateCommand())
             {
@@ -390,37 +404,42 @@ WHERE
                             var principalTableName = reader["RDB$RELATION_NAME"].ToString().Trim();
                             var onDelete = reader["RDB$DELETE_RULE"].ToString().Trim();
 
+                            var princilaTable =  tables.FirstOrDefault(t => t.Name == principalTableName) ??
+                                tables.FirstOrDefault(t => t.Name.Equals(principalTableName, StringComparison.InvariantCultureIgnoreCase));
+
+                            if (princilaTable == null)
+                            {
+                                _logger.ForeignKeyReferencesMissingTableWarning(constaintName);
+                                System.Console.WriteLine($"FK '{constaintName}' on table '{table.Name}' is missing principal table '{principalTableName}' (not found in {tables.Count()} tables)");
+                                continue;
+                            }
+
                             foreignKey = new DatabaseForeignKey
                             {
                                 Name = constaintName,
-                                PrincipalTable = tables.FirstOrDefault(t => t.Name == principalTableName)??
-                                tables.FirstOrDefault(t => t.Name.Equals(principalTableName, StringComparison.OrdinalIgnoreCase)),
+                                PrincipalTable = princilaTable,
                                 OnDelete = ConvertToReferentialAction(onDelete),
                                 Table = table
                             };
 
                             _logger.ForeignKeyFound(table.Name, constaintName, principalTableName, onDelete);
-
-                            if (foreignKey.PrincipalTable == null)
+                            
+                            foreach (var pair in reader["COLUMN_NAME"].ToString().Trim().Split(','))
                             {
-                                _logger.ForeignKeyReferencesMissingTableWarning(constaintName);
-                                continue;
-                            }
-
-                            foreach (var pair in reader.GetString(3).Split(','))
-                            {
-
                                 var columnName = pair.Split('$')[0];
                                 var column = table.Columns.FirstOrDefault(c => c.Name == columnName)??
                                     table.Columns.FirstOrDefault(c => c.Name.Equals(columnName, StringComparison.OrdinalIgnoreCase));
-                                Debug.Assert(column != null, "column is null.");
+                                Debug.Assert(column != null, $"column is null. Table '{table.Name}' does not contain a column '{columnName}'");
 
                                 var principalColumnName = pair.Split('$')[1];
-                                var principalColumn = foreignKey.PrincipalTable.Columns.FirstOrDefault(c => c.Name == principalColumnName);
+                                var principalColumn = foreignKey.PrincipalTable.Columns.FirstOrDefault(c => c.Name.Equals(principalColumnName, StringComparison.InvariantCultureIgnoreCase));
 
                                 if (principalColumn == null)
                                 {
                                     invalid = true;
+
+                                    System.Console.WriteLine($"could not find principal column '{principalColumnName}' on table '{principalTableName}' for FK '{constaintName}'");
+
                                     _logger.ForeignKeyPrincipalColumnMissingWarning(
                                         constaintName,
                                         table.Name,
