@@ -220,7 +220,7 @@ ORDER BY RF.RDB$FIELD_POSITION";
                     {
                         var columnName = reader["FIELD_NAME"].ToString().Trim();
                         var dataType = reader["FIELD_TYPE"].ToString().Trim();
-                        var notNull = reader["FIELD_NULL"].ToString().Trim().Equals("NULL", StringComparison.OrdinalIgnoreCase);
+                        var notNull = reader["FIELD_NULL"].ToString().Trim().Equals("NOT NULL", StringComparison.OrdinalIgnoreCase);
                         var defaultValue = reader["FIELD_DEFAULT"].ToString().Trim();
                         var isIdentity = int.Parse(reader["IDENTITY"].ToString())== 1;
                         var description = reader["FIELD_DESCRIPTION"].ToString().Trim();
